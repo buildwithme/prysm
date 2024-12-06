@@ -41,11 +41,15 @@ func (s *Service) OnAttestation(ctx context.Context, a ethpb.Att, disparity time
 	defer span.End()
 
 	if err := helpers.ValidateNilAttestation(a); err != nil {
+		s.attestationStats.IncrementFailure("nil_attestation")
 		return err
 	}
+
 	if err := helpers.ValidateSlotTargetEpoch(a.GetData()); err != nil {
+		s.attestationStats.IncrementFailure("invalid_target_epoch")
 		return err
 	}
+
 	tgt := a.GetData().Target.Copy()
 
 	// Note that target root check is ignored here because it was performed in sync's validation pipeline:
@@ -56,6 +60,7 @@ func (s *Service) OnAttestation(ctx context.Context, a ethpb.Att, disparity time
 	// save it to the cache.
 	baseState, err := s.getAttPreState(ctx, tgt)
 	if err != nil {
+		s.attestationStats.IncrementFailure("no_prestate")
 		return err
 	}
 
@@ -63,11 +68,13 @@ func (s *Service) OnAttestation(ctx context.Context, a ethpb.Att, disparity time
 
 	// Verify attestation target is from current epoch or previous epoch.
 	if err := verifyAttTargetEpoch(ctx, genesisTime, uint64(time.Now().Add(disparity).Unix()), tgt); err != nil {
+		s.attestationStats.IncrementFailure("invalid_target_epoch_relation")
 		return err
 	}
 
 	// Verify attestation beacon block is known and not from the future.
 	if err := s.verifyBeaconBlock(ctx, a.GetData()); err != nil {
+		s.attestationStats.IncrementFailure("unknown_beacon_block")
 		return errors.Wrap(err, "could not verify attestation beacon block")
 	}
 
@@ -76,21 +83,30 @@ func (s *Service) OnAttestation(ctx context.Context, a ethpb.Att, disparity time
 
 	// Verify attestations can only affect the fork choice of subsequent slots.
 	if err := slots.VerifyTime(genesisTime, a.GetData().Slot+1, disparity); err != nil {
+		s.attestationStats.IncrementFailure("attestation_in_future")
 		return err
 	}
 
 	// Use the target state to verify attesting indices are valid.
 	committees, err := helpers.AttestationCommittees(ctx, baseState, a)
 	if err != nil {
+		s.attestationStats.IncrementFailure("committee_calculation_error")
 		return err
 	}
+
 	indexedAtt, err := attestation.ConvertToIndexed(ctx, a, committees...)
 	if err != nil {
+		s.attestationStats.IncrementFailure("indexed_attestation_error")
 		return err
 	}
+
 	if err := attestation.IsValidAttestationIndices(ctx, indexedAtt); err != nil {
+		s.attestationStats.IncrementFailure("invalid_attestation_indices")
 		return err
 	}
+
+	// At this point, the attestation has passed all verification checks.
+	s.attestationStats.IncrementSuccess()
 
 	// Note that signature verification is ignored here because it was performed in sync's validation pipeline:
 	// validate_aggregate_proof.go and validate_beacon_attestation.go

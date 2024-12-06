@@ -160,15 +160,22 @@ func (s *Service) updateCheckpoints(
 	preState, postState state.BeaconState,
 	blockRoot [32]byte,
 ) error {
-	if coreTime.CurrentEpoch(postState) > cp.c && s.cfg.ForkChoiceStore.IsCanonical(blockRoot) {
+	currentEpoch := coreTime.CurrentEpoch(postState)
+
+	if currentEpoch > cp.c && s.cfg.ForkChoiceStore.IsCanonical(blockRoot) {
 		headSt, err := s.HeadState(ctx)
 		if err != nil {
 			return errors.Wrap(err, "could not get head state")
 		}
+
 		if err := reportEpochMetrics(ctx, postState, headSt); err != nil {
 			log.WithError(err).Error("could not report epoch metrics")
 		}
+
+		// Log and reset the attestation verification stats now that the epoch has ended.
+		s.attestationStats.LogEpochSummaryAndReset(currentEpoch)
 	}
+
 	if err := s.updateJustificationOnBlock(ctx, preState, postState, cp.j); err != nil {
 		return errors.Wrap(err, "could not update justified checkpoint")
 	}
